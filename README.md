@@ -26,7 +26,7 @@ java -classpath bin;lib\slf4j-api-1.6.1.jar;lib\slf4j-simple-1.6.1.jar;lib\mercu
 **x86 (32/64 bits)**
 **ARM (32/64 bits)**
 ```sh
-java -classpath bin:lib/slf4j-api-1.6.1.jar:lib/slf4j-simple-1.6.1.jar:lib/keonn-util.jar:lib/keonn-adrd.jar -Djava.library.path=./native-lib/linux-amd64 com.keonn.adrd.ADRD_M1_10Asynch -c eapi:///dev/ttyUSB0
+java -classpath bin:lib/slf4j-api-1.6.1.jar:lib/slf4j-simple-1.6.1.jar:lib/keonn-util.jar:lib/keonn-adrd.jar -Djava.library.path=./native-lib/linux-amd64 com.keonn.adpy500.examples.ADPY500_Example1 -c eapi:///dev/ttyUSB0
 ```
 
 
