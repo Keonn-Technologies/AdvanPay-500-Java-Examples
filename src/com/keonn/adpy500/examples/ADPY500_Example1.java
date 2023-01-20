@@ -1,5 +1,7 @@
 package com.keonn.adpy500.examples;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.TimeUnit;
@@ -38,7 +40,6 @@ import snaq.util.jclap.OptionException;
  */
 public class ADPY500_Example1 implements ReadExceptionListener{
 
-	
 	private static final int DEF_READ_POWER 			= 1250;
 	private static final int DEF_READ_TIME_MS 			= 50;
 	private static final String DEF_DEVICE 				= "eapi:///dev/ttyUSB0";
@@ -47,13 +48,12 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 	private static final Gen2.StaticQ DEF_Q			 	= new Gen2.StaticQ(3);
 	private static final Reader.Region DEF_REGION	 	= Reader.Region.EU3;
 	
-	
 	/*
 	 * Reads and time threshold.
 	 * When the number of reads is reached in the defined period, the tag state goes from READ to VALIDATING
 	 */
-	private static final int READS_THRESHOLD = 3;
-	private static final int READS_THRESHOLD_PERIOD_MS = 2000;
+	private static final int READ_THRESHOLD = 3;
+	private static final int READ_WINDOW_MS = 2000;
 	
 	/* Defines the maximum time a validation can take, if it takes longer, the current deactivation operation is cancelled */
 	private static final int VALIDATING_WINDOW_MS = 3000;
@@ -76,6 +76,7 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 
 	private static Region region;
 	private static String connectionString;
+	private static List<String> deniedEPCs;
 
 
 	/**
@@ -92,6 +93,7 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 		parser.addStringOption("q", "qu", "EPCGen2 q", false, false);
 		parser.addStringOption("s", "session", "EPCGen2 session", false, false);
 		parser.addStringOption("r", "region", "EPCGent2 region", false, false);
+		parser.addStringOption("x", "denied", "Comma separated list of epcs that will fail the validation", false, false);
 		parser.addIntegerOption("z", "power", "Power in cdBm", false, false);
 		parser.addIntegerOption("o", "read", "Read time in milli seconds", false, false);
 
@@ -109,6 +111,15 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 			String qu = parser.getStringOptionValue("q",""+DEF_Q.initialQ);
 			s = parser.getStringOptionValue("s",DEF_SESSION.toString());
 			r = parser.getStringOptionValue("r",DEF_REGION.toString());
+			String denied = parser.getStringOptionValue("x",null);
+			if(denied!=null && denied.length()>0) {
+				/* parse list of denied epcs */
+				try {
+					deniedEPCs = Arrays.asList(denied.toUpperCase().split(",", -1));
+				} catch (Exception e) {
+					e.printStackTrace();
+				}
+			}
 
 			try {
 				target = Gen2.Target.valueOf(t);
@@ -318,7 +329,9 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 	 * @return
 	 */
 	private boolean isEPCAccepted(String epc) {
-		//return epc!=null && !epc.startsWith("33");
+		if(deniedEPCs!=null) {
+			return !deniedEPCs.contains(epc.toUpperCase());
+		}
 		return true;
 	}
 
@@ -382,11 +395,11 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 
 		public synchronized boolean updateReadThreshold() {
 			long now = System.nanoTime();
-			boolean reached = readsInReadState>=READS_THRESHOLD && (now-stateStartTs)<TimeUnit.MILLISECONDS.toNanos(READS_THRESHOLD_PERIOD_MS);
+			boolean reached = readsInReadState>=READ_THRESHOLD && (now-stateStartTs)<TimeUnit.MILLISECONDS.toNanos(READ_WINDOW_MS);
 			
 			/* check if we have surpassed the time threshold */
 			/* In such case, reset the state start time, otherwise we would never reach the threshold conditions */
-			if((now-stateStartTs)>TimeUnit.MILLISECONDS.toNanos(READS_THRESHOLD_PERIOD_MS)) {
+			if((now-stateStartTs)>TimeUnit.MILLISECONDS.toNanos(READ_WINDOW_MS)) {
 				stateStartTs=now;
 			}
 			
