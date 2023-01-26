@@ -241,7 +241,6 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 			reader.addReadExceptionListener(this);
 			
 			/* Reader GPIO configuration */
-			Object obj = reader.paramGet(TMConstants.TMR_PARAM_GPIO_INPUTLIST);
 			reader.paramSet(TMConstants.TMR_PARAM_GPIO_INPUTLIST, new int[] {3,4});
 			reader.paramSet(TMConstants.TMR_PARAM_GPIO_OUTPUTLIST, new int[] {1,2});
 			
@@ -268,7 +267,7 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 				if(tags.length>1) {
 					/* Two tags detected */
 					/* Reset state and continue reading */
-					System.out.println("More than one tag read. Reset");
+					System.out.println("["+System.currentTimeMillis()+"] More than one tag read. Reset");
 					activeTag.reset();
 					continue;
 				}
@@ -281,7 +280,7 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 					for(GpioPin in: ins) {
 						if(in.id==3 && in.high && (now-lastDeactivate)>TimeUnit.MILLISECONDS.toNanos(DEACTIVATION_PERIOD_MS)) {
 							// deactivate tag
-							System.out.println("Deactivate");
+							System.out.println("["+System.currentTimeMillis()+"] Deactivate");
 							reader.gpoSet(new Reader.GpioPin[] {new Reader.GpioPin(2, true)});
 							Thread.sleep(50);
 							reader.gpoSet(new Reader.GpioPin[] {new Reader.GpioPin(2, false)});
@@ -419,14 +418,14 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 				if(inTime) {
 					state = TagState.DEACTIVATED;
 					stateStartTs=now;
-					System.out.println("["+epc+"] VALIDATING->DEACTIVATED. Tag needs to be In Place.");
+					System.out.println("["+System.currentTimeMillis()+"]["+epc+"] VALIDATING->DEACTIVATED. Tag needs to be In Place.");
 				} else {
 					reset();
-					System.out.println("["+epc+"] VALIDATING took too long. Reset.");
+					System.out.println("["+System.currentTimeMillis()+"]["+epc+"] VALIDATING took too long. Reset.");
 				}
 				
 			} else {
-				System.out.println("["+epc+"] VALIDATING failed");
+				System.out.println("["+System.currentTimeMillis()+"]["+epc+"] VALIDATING failed");
 				reset();
 			}
 		}
@@ -437,7 +436,7 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 				long now = System.nanoTime();
 				boolean inTime = (now-stateStartTs)<TimeUnit.MILLISECONDS.toNanos(DEACTIVATING_WINDOW_MS);
 				if(!inTime) {
-					System.out.println("["+epc+"] Closing DEACTIVATION window. Reset");
+					System.out.println("["+System.currentTimeMillis()+"]["+epc+"] Closing DEACTIVATION window. Reset");
 					reset();
 					return false;
 				}
@@ -456,10 +455,10 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 			
 			if(this.epc==null) {
 				this.epc=epc;
-				System.out.println("["+epc+"] first READ");
+				System.out.println("["+System.currentTimeMillis()+"]["+epc+"] first READ");
 				state = TagState.READ;
 			} else if (!this.epc.equals(epc)) {
-				System.out.println("["+epc+"] first READ. Previous EPC discarded: "+this.epc);
+				System.out.println("["+System.currentTimeMillis()+"]["+epc+"] first READ. Previous EPC discarded: "+this.epc);
 				reset();
 				this.epc=epc;
 				state = TagState.READ;
@@ -473,7 +472,7 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 				/* check if threshold is met */
 				if(updateReadThreshold()) {
 					/* enter validation phase */
-					System.out.println("["+epc+"] READ->VALIDATING");
+					System.out.println("["+System.currentTimeMillis()+"]["+epc+"] READ->VALIDATING");
 					setState(TagState.VALIDATING);
 					
 					/* request tag validation */
