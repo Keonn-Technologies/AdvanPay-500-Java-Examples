@@ -2,8 +2,9 @@ package com.keonn.adpy500.examples;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import com.thingmagic.Gen2;
@@ -52,17 +53,26 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 	 * Reads and time threshold.
 	 * When the number of reads is reached in the defined period, the tag state goes from READ to VALIDATING
 	 */
-	private static final int READ_THRESHOLD = 3;
-	private static final int READ_WINDOW_MS = 2000;
+	private static int READ_THRESHOLD = 3;
+	private static int READ_WINDOW_MS = 2000;
+	
+	private static int RESET_WINDOW_MS = 1500;
 	
 	/* Defines the maximum time a validation can take, if it takes longer, the current deactivation operation is cancelled */
-	private static final int VALIDATING_WINDOW_MS = 3000;
+	private static int VALIDATING_WINDOW_MS = 3000;
 	
 	/* Defines the maximum time a deactivation operation is available, if it takes longer, the current deactivation operation is cancelled */
-	private static final int DEACTIVATING_WINDOW_MS = 10000;
+	private static int DEACTIVATING_WINDOW_MS = 2500;
 	
 	/* Defines the idle period after a deactivation operation. No more than one deactivation can happen in this time period */
-	private static final long DEACTIVATION_PERIOD_MS = 3000;
+	private static int DEACTIVATION_PERIOD_MS = 2500;
+	
+	/* Define a delay for the validation process of the epcs */
+	private static int VALIDATION_DELAY_MS = 200;
+	
+	/* Minimum time window  for the tag being undetected (sensor in low state) to allow a transition READ -> VALIDATING*/
+	private static int LOW_LEVEL_WINDOW_MS = 1000;
+	
 	
 	/* Read power defined in cdBm */
 	private static int readPower;
@@ -70,9 +80,9 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 	/* EPCgen2 Session/Target/Q */
 	private static Session session = Session.S0;
 	private static Target target = Target.A;
-	private static Gen2.Q q = new Gen2.StaticQ(3);
+	private static Gen2.Q q = new Gen2.StaticQ(2);
 
-	private static int readTime=50;
+	private static int readTime=DEF_READ_TIME_MS;
 
 	private static Region region;
 	private static String connectionString;
@@ -96,6 +106,12 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 		parser.addStringOption("x", "denied", "Comma separated list of epcs that will fail the validation", false, false);
 		parser.addIntegerOption("z", "power", "Power in cdBm", false, false);
 		parser.addIntegerOption("o", "read", "Read time in milli seconds", false, false);
+		parser.addIntegerOption("a", "deactivation-window", "Deactivation window time (ms)", false, false);
+		parser.addIntegerOption("b", "deactivation-action", "Deactivation action time (ms)", false, false);
+		parser.addIntegerOption("d", "validation-windows", "Validation window time (ms)", false, false);
+		parser.addIntegerOption("e", "read-windows", "Read window time (ms)", false, false);
+		parser.addIntegerOption("f", "read-threshold", "Read threshold (reads)", false, false);
+		parser.addIntegerOption("g", "validation-delay", "Validation delay (ms)", false, false);
 
 		String t=null;
 		String s=null;
@@ -106,6 +122,14 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 			
 			power = parser.getIntegerOptionValue("z", DEF_READ_POWER);
 			readTime = parser.getIntegerOptionValue("o", DEF_READ_TIME_MS);
+			DEACTIVATING_WINDOW_MS = parser.getIntegerOptionValue("a", DEACTIVATING_WINDOW_MS);
+			DEACTIVATION_PERIOD_MS = parser.getIntegerOptionValue("b", DEACTIVATION_PERIOD_MS);
+			VALIDATING_WINDOW_MS = parser.getIntegerOptionValue("d", VALIDATING_WINDOW_MS);
+			READ_WINDOW_MS = parser.getIntegerOptionValue("e", READ_WINDOW_MS);
+			READ_THRESHOLD = parser.getIntegerOptionValue("f", READ_THRESHOLD);
+			VALIDATION_DELAY_MS = parser.getIntegerOptionValue("g", VALIDATION_DELAY_MS);
+			
+			
 			connectionString = parser.getStringOptionValue("c",DEF_DEVICE);
 			t = parser.getStringOptionValue("t",DEF_TARGET.toString());
 			String qu = parser.getStringOptionValue("q",""+DEF_Q.initialQ);
@@ -181,7 +205,7 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 				}
 			});
 			
-			app.run();
+			app.runWithRetries();
 			
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -189,21 +213,7 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 	}
 
 	private SerialReader reader;
-	
-	public ADPY500_Example1() {
-	}
-	
-	/**
-	 * Release resources
-	 */
-	private void shutdown() {
-		if(reader!=null){
-			System.out.println("Stopping AdvanPay-500...");
-			reader.stopReading();
-			reader.destroy();
-			reader=null;
-		}
-	}
+	private boolean terminate = false;
 	
 	/* Contains the last deactivation action */
 	private long lastDeactivate=0;
@@ -214,53 +224,154 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 	/* Tag that is currently in the process of being read/validated/deactivated */
 	private ActiveTag activeTag=new ActiveTag();
 	
-	private void run() {
+	private ExecutorService executor = Executors.newFixedThreadPool(2);
+	
+	private TagValidator tagValidator = new TagValidator() {
+		
+		/**
+		 * This is where the validation logic goes:
+		 * - database access
+		 * - http request
+		 * - etc
+		 * This method is already running asynchronously from the RFID tasks
+		 * 
+		 * @param epc
+		 * @return
+		 */
+		@Override
+		public boolean validateTag(String epc) {
+			try {
+				Thread.sleep(VALIDATION_DELAY_MS);
+			} catch (InterruptedException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+			if(deniedEPCs!=null) {
+				return !deniedEPCs.contains(epc.toUpperCase());
+			}
+			return true;
+		}
+	};
+	
+	
+	
+	public ADPY500_Example1() {
+	}
+	
+	/**
+	 * Release resources
+	 */
+	private void shutdown() {
+		terminate=true;
+		try {
+			Thread.sleep(500);
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		if(reader!=null){
+			System.out.println("Stopping AdvanPay-500...");
+			reader.stopReading();
+			reader.destroy();
+			reader=null;
+		}
+	}
+	
+	private void runWithRetries() {
 		try {
 			
-			reader = (SerialReader) Reader.create(connectionString);
-			reader.connect();
 			
-			/* Reader FW/HW */
-			String fw = (String) reader.paramGet(TMConstants.TMR_PARAM_VERSION_SOFTWARE);
-			String model = (String) reader.paramGet(TMConstants.TMR_PARAM_VERSION_MODEL);
-			String serial= (String) reader.paramGet(TMConstants.TMR_PARAM_VERSION_SERIAL);
-			System.out.println("RFID model: "+model);
-			System.out.println("RFID serial: "+serial);
-			System.out.println("RFID software version: "+fw);
-
-			/* reader RFID configuration */
-			reader.paramSet(TMConstants.TMR_PARAM_REGION_ID, region);
-			reader.paramSet(TMConstants.TMR_PARAM_TAGOP_PROTOCOL, TagProtocol.GEN2);
-			reader.paramSet(TMConstants.TMR_PARAM_RADIO_READPOWER, readPower);
-			reader.paramSet(TMConstants.TMR_PARAM_GEN2_SESSION, session);
-			reader.paramSet(TMConstants.TMR_PARAM_GEN2_TARGET, target);
-			reader.paramSet(TMConstants.TMR_PARAM_GEN2_TARI, Gen2.Tari.TARI_25US);
-			reader.paramSet(TMConstants.TMR_PARAM_GEN2_BLF, Gen2.LinkFrequency.LINK250KHZ);
-			reader.paramSet(TMConstants.TMR_PARAM_GEN2_Q, q);
-			reader.paramSet(TMConstants.TMR_PARAM_GEN2_TAGENCODING, Gen2.TagEncoding.M4);
-			reader.addReadExceptionListener(this);
-			
-			/* Reader GPIO configuration */
-			reader.paramSet(TMConstants.TMR_PARAM_GPIO_INPUTLIST, new int[] {3,4});
-			reader.paramSet(TMConstants.TMR_PARAM_GPIO_OUTPUTLIST, new int[] {1,2});
-			
-			System.out.println("Power: "+reader.paramGet(TMConstants.TMR_PARAM_RADIO_READPOWER));
-			System.out.println("region: "+reader.paramGet(TMConstants.TMR_PARAM_REGION_ID));
-			System.out.println("session: "+reader.paramGet(TMConstants.TMR_PARAM_GEN2_SESSION));
-			System.out.println("q: "+reader.paramGet(TMConstants.TMR_PARAM_GEN2_Q));
-			System.out.println("target: "+reader.paramGet(TMConstants.TMR_PARAM_GEN2_TARGET));
-			System.out.println("encoding: "+reader.paramGet(TMConstants.TMR_PARAM_GEN2_TAGENCODING));
-			System.out.println("BLF: "+reader.paramGet(TMConstants.TMR_PARAM_GEN2_BLF));
-			System.out.println("tari: "+reader.paramGet(TMConstants.TMR_PARAM_GEN2_TARI));
-			System.out.println("asyncOnTime: "+reader.paramGet(TMConstants.TMR_PARAM_READ_ASYNCONTIME));
-			System.out.println("asyncOffTime: "+reader.paramGet(TMConstants.TMR_PARAM_READ_ASYNCOFFTIME));
-			
-			SimpleReadPlan srp = new SimpleReadPlan(new int[] {1}, TagProtocol.GEN2, null, 100, false);
-			reader.paramSet(TMConstants.TMR_PARAM_READ_PLAN, srp);
-			System.out.println();
-			
-			/* main loop that reads continuously and update the activeTag and its state */
 			while(true) {
+				run();
+			}
+			
+		} catch (InterruptedException e) {
+			System.out.println("InterruptedException caught. Terminating app...");
+			System.exit(3);
+		} catch (Exception e) {
+			e.printStackTrace();
+			if(reader!=null) {
+				try {
+					reader.destroy();
+				} catch (Exception e2) {
+					e2.printStackTrace();
+				}
+			}
+			activeTag.reset();
+			/* wait for some time before retry connection*/
+			try {
+				Thread.sleep(5000);
+			} catch (InterruptedException e1) {
+				System.out.println("InterruptedException caught. Terminating app...");
+				System.exit(3);
+			}
+		}
+	}
+	
+	private void run() throws ReaderException, InterruptedException {
+		reader = (SerialReader) Reader.create(connectionString);
+		reader.connect();
+		
+		/* Reader FW/HW */
+		String fw = (String) reader.paramGet(TMConstants.TMR_PARAM_VERSION_SOFTWARE);
+		String model = (String) reader.paramGet(TMConstants.TMR_PARAM_VERSION_MODEL);
+		String serial= (String) reader.paramGet(TMConstants.TMR_PARAM_VERSION_SERIAL);
+		System.out.println("RFID model: "+model);
+		System.out.println("RFID serial: "+serial);
+		System.out.println("RFID software version: "+fw);
+
+		/* reader RFID configuration */
+		reader.paramSet(TMConstants.TMR_PARAM_REGION_ID, region);
+		reader.paramSet(TMConstants.TMR_PARAM_TAGOP_PROTOCOL, TagProtocol.GEN2);
+		reader.paramSet(TMConstants.TMR_PARAM_RADIO_READPOWER, readPower);
+		reader.paramSet(TMConstants.TMR_PARAM_GEN2_SESSION, session);
+		reader.paramSet(TMConstants.TMR_PARAM_GEN2_TARGET, target);
+		reader.paramSet(TMConstants.TMR_PARAM_GEN2_TARI, Gen2.Tari.TARI_25US);
+		reader.paramSet(TMConstants.TMR_PARAM_GEN2_BLF, Gen2.LinkFrequency.LINK250KHZ);
+		reader.paramSet(TMConstants.TMR_PARAM_GEN2_Q, q);
+		reader.paramSet(TMConstants.TMR_PARAM_GEN2_TAGENCODING, Gen2.TagEncoding.M4);
+		reader.addReadExceptionListener(this);
+		
+		/* Reader GPIO configuration */
+		reader.paramSet(TMConstants.TMR_PARAM_GPIO_INPUTLIST, new int[] {3,4});
+		reader.paramSet(TMConstants.TMR_PARAM_GPIO_OUTPUTLIST, new int[] {1,2});
+		
+		System.out.println("Power: "+reader.paramGet(TMConstants.TMR_PARAM_RADIO_READPOWER));
+		System.out.println("region: "+reader.paramGet(TMConstants.TMR_PARAM_REGION_ID));
+		System.out.println("session: "+reader.paramGet(TMConstants.TMR_PARAM_GEN2_SESSION));
+		System.out.println("q: "+reader.paramGet(TMConstants.TMR_PARAM_GEN2_Q));
+		System.out.println("target: "+reader.paramGet(TMConstants.TMR_PARAM_GEN2_TARGET));
+		System.out.println("encoding: "+reader.paramGet(TMConstants.TMR_PARAM_GEN2_TAGENCODING));
+		System.out.println("BLF: "+reader.paramGet(TMConstants.TMR_PARAM_GEN2_BLF));
+		System.out.println("tari: "+reader.paramGet(TMConstants.TMR_PARAM_GEN2_TARI));
+		System.out.println("asyncOnTime: "+reader.paramGet(TMConstants.TMR_PARAM_READ_ASYNCONTIME));
+		System.out.println("asyncOffTime: "+reader.paramGet(TMConstants.TMR_PARAM_READ_ASYNCOFFTIME));
+		System.out.println();
+		
+		
+		System.out.println("Idle time between processes (ms): "+RESET_WINDOW_MS);
+		System.out.println("Read threshold(reads): "+READ_THRESHOLD);
+		System.out.println("Read window time (ms): "+READ_WINDOW_MS);
+		System.out.println("Validation simulated delay (ms): "+VALIDATION_DELAY_MS);
+		System.out.println("Validation maximum time (ms): "+VALIDATING_WINDOW_MS);
+		System.out.println("Pre-validation sensor undetection time (ms): "+LOW_LEVEL_WINDOW_MS);
+		System.out.println("Deactivation maximum time (ms): "+DEACTIVATING_WINDOW_MS);
+		System.out.println("Deactivation idle time after a detachment action (ms): "+DEACTIVATION_PERIOD_MS);
+		System.out.println();
+		
+		
+		SimpleReadPlan srp = new SimpleReadPlan(new int[] {1}, TagProtocol.GEN2, null, 100, false);
+		reader.paramSet(TMConstants.TMR_PARAM_READ_PLAN, srp);
+		System.out.println();
+		
+		boolean oldTagInPlace = false;
+		boolean tagInPlace=false;
+		long tagInPlaceStartTs=System.nanoTime();
+		
+		/* main loop that reads continuously and update the activeTag and its state */
+		while(!terminate ) {
+			
+			try {
 				
 				TagReadData[] tags = reader.read(readTime);
 				
@@ -273,19 +384,19 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 				}
 				
 				/* current time in nanos */
-				long now = System.nanoTime();
+				final long now = System.nanoTime();
+				tagInPlace = isTagInPlace(reader);
+				if(tagInPlace!=oldTagInPlace) {
+					System.out.println("["+System.currentTimeMillis()+"] "+(tagInPlace?"Tag in position":"Tag leaving position"));
+					tagInPlaceStartTs=now;
+				}
 				
-				if(activeTag.isDeactivationNeeded()) {
-					GpioPin[] ins = reader.gpiGet();
-					for(GpioPin in: ins) {
-						if(in.id==3 && in.high && (now-lastDeactivate)>TimeUnit.MILLISECONDS.toNanos(DEACTIVATION_PERIOD_MS)) {
-							// deactivate tag
-							System.out.println("["+System.currentTimeMillis()+"] Deactivate");
-							reader.gpoSet(new Reader.GpioPin[] {new Reader.GpioPin(2, true)});
-							Thread.sleep(50);
-							reader.gpoSet(new Reader.GpioPin[] {new Reader.GpioPin(2, false)});
-							lastDeactivate= now;
-						}
+				if(activeTag.state == TagState.VALIDATING || activeTag.state == TagState.DEACTIVATED) {
+					/* Detect disconnect events and reset, this means possible tampering with when the tag is in the validation or deactivation phase*/
+					if(oldTagInPlace && !tagInPlace) {
+						System.out.println("["+System.currentTimeMillis()+"] Tag leaving position. Reset system");
+						activeTag.reset();
+						continue;
 					}
 				}
 				
@@ -294,50 +405,82 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 					String epc = tags[0].epcString();
 					
 					/* process read */
-					activeTag.processRead(epc);
+					activeTag.processRead(epc,tagInPlace,tagInPlaceStartTs);
+				} else {
+					activeTag.processRead(null,tagInPlace,tagInPlaceStartTs);
+				}
+				
+				if(activeTag.isDeactivationNeeded()) {
+					GpioPin[] ins = reader.gpiGet();
+					for(GpioPin in: ins) {
+						if(in.id==3 && in.high && (now-lastDeactivate)>TimeUnit.MILLISECONDS.toNanos(DEACTIVATION_PERIOD_MS)) {
+							// deactivate tag
+							System.out.println("["+System.currentTimeMillis()+"] Start deactivate operation.");
+							reader.gpoSet(new Reader.GpioPin[] {new Reader.GpioPin(2, true)});
+							Thread.sleep(20);
+							reader.gpoSet(new Reader.GpioPin[] {new Reader.GpioPin(2, false)});
+							lastDeactivate= now;
+						}
+					}
+				}
+				
+			} finally {
+				oldTagInPlace=tagInPlace;
+			}
+		}
+	}
+
+	private boolean isTagInPlace(SerialReader reader2) throws ReaderException {
+		GpioPin[] ins = reader.gpiGet();
+		for(GpioPin in: ins) {
+			if(in.id==3 && in.high) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private Future<Boolean> validationFuture = null;
+	private void validation(final ActiveTag tag) {
+		
+		if(validationFuture!=null) {
+			validationFuture.cancel(false);
+		}
+		
+		validationFuture = executor.submit(() -> {
+			
+			if(tagValidator==null) {
+				System.out.println("Tag Validator not defined.");
+				System.exit(4);
+			}
+			
+			boolean validated=false;
+			try {
+				validated = tagValidator.validateTag(tag.getEPC());
+			} catch (Exception e) {
+				e.printStackTrace();
+				return false;
+			}
+			
+			synchronized (activeTag) {
+				/* Ignore in case the active epc is now different */
+				if(tag.getEPC().equals(activeTag.getEPC())) {
+					tag.validate(validated);
 				}
 			}
 			
-		} catch (Throwable e) {
-			e.printStackTrace();
-		}
+			return true;
+        });
 	}
-
-	private Timer timer = new Timer(true);
-	private void validation(final ActiveTag tag) {
-		
-		timer.schedule(new TimerTask() {
-			
-			@Override
-			public void run() {
-				tag.validate(isEPCAccepted(tag.getEPC()));
-			}
-
-		}, 0);
-		
-	}
-
-	/**
-	 * This is where the validation logic goes:
-	 * - database access
-	 * - http request
-	 * - etc
-	 * This method is already running asynchronously from the RFID tasks
-	 * 
-	 * @param epc
-	 * @return
-	 */
-	private boolean isEPCAccepted(String epc) {
-		if(deniedEPCs!=null) {
-			return !deniedEPCs.contains(epc.toUpperCase());
-		}
-		return true;
-	}
-
 
 	@Override
 	public void tagReadException(Reader r, ReaderException re) {
 		re.printStackTrace();
+	}
+	
+	interface TagValidator{
+		
+		boolean validateTag(String epc);
 	}
 	
 	/**
@@ -346,23 +489,35 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 	 * 
 	 */
 	enum TagState{
-		READ,			/* initial state, the first time a TAG is read */
+		RESET,			/* Initial state */
+						/*
+						 Conditions to move to READ state:
+						   > At least RESET_WINDOW_MS must elapse in RESET state to allow a transition
+						 */
+		
+		READ,			/* State where the active tag is being read*/
 						/* 
-						When the tag has been read enough to enter the validation phase, were a 3rd party system confirms whether it must be deactivated.
-						During validation the system keeps reading and stops the process if:
-						  > A different tag is read
-						  > The validation is not positive
-						  > The tag is not detected in place after some time
+						The conditions to enter VALIDATING state are:
+						  > Within READ_WINDOW_MS, the tags has been read at least READ_THRESHOLD
+						  > the tag sensor has been at least LOW_LEVEL_WINDOW_MS without detecting a tag
 						*/
+		
 		VALIDATING,		/* State where the tag is being analyzed to confirm a deactivation is accepted */
 						/* 
-						The validation process may end up in three different ways:
-						  > The validation process takes longer than a certain defined time, the process is aborted
-						  > The validation completes within the allowed time and is positive -> deactivation starts
-						  > The validation completes within the allowed time and is negative -> deactivation is not granted
-						If the process is positive, the state changes to DEACTIVATED, otherwise it changes to READ to allow a new process take place
+						In the validation phase, a 3rd party system confirms whether it must be deactivated.
+						
+						The conditions to enter DEACTIVATED state are:
+						  > The validation completes within the allowed time (DEACTIVATING_WINDOW_MS) and is positive
+						  > No reads with a different EPC happens during VALIDATING phase
 		 				*/
-		DEACTIVATED		/* tag is deactivated */
+		
+		DEACTIVATED		/* tag is deactivated whenever is detected in its position.*/
+						/*
+						 The conditions to enter RESET state are:
+						   > A different tag is read
+						   > Time period DEACTIVATING_WINDOW_MS elapses
+						 
+						 */
 	}
 	
 	/**
@@ -375,13 +530,13 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 		String epc=null;
 		long stateStartTs;
 		int readsInReadState=0;
-		TagState state;
+		TagState state = TagState.RESET;
 
 		public synchronized void reset() {
 			epc=null;
 			readsInReadState=0;
-			state=null;
-			stateStartTs=0;
+			state=TagState.RESET;
+			stateStartTs=System.nanoTime();
 		}
 
 		public synchronized void read() {
@@ -447,15 +602,36 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 			return false;
 		}
 
-		public synchronized void processRead(String epc) {
+		public synchronized void processRead(String epc, boolean isTagInPlace, long tagInPlaceStartTs) {
 			
 			if(epc==null) {
+				
+				/* update state without a read */
+				if(state==TagState.VALIDATING) {
+					final long now = System.nanoTime();
+					
+					if((now-stateStartTs)>TimeUnit.MILLISECONDS.toNanos(VALIDATING_WINDOW_MS)) {
+						System.out.println("["+System.currentTimeMillis()+"] validation is taking too long. Reset system.");
+						reset();
+						return;
+					}
+				}
+				
 				return;
+			}
+			
+			if(state==TagState.RESET) {
+				final long now = System.nanoTime();
+				
+				/* Avoid moving to READ if RESET_WINDOW_MS has not elapsed */
+				if((now-stateStartTs)<TimeUnit.MILLISECONDS.toNanos(RESET_WINDOW_MS)) {
+					return;
+				}
 			}
 			
 			if(this.epc==null) {
 				this.epc=epc;
-				System.out.println("["+System.currentTimeMillis()+"]["+epc+"] first READ");
+				//System.out.println("["+System.currentTimeMillis()+"]["+epc+"] READ[1]");
 				state = TagState.READ;
 			} else if (!this.epc.equals(epc)) {
 				System.out.println("["+System.currentTimeMillis()+"]["+epc+"] first READ. Previous EPC discarded: "+this.epc);
@@ -466,11 +642,26 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 			
 			if(state == TagState.READ) {
 				
+				/* In case the tag is in place, do not take into account reads */
+				if (isTagInPlace) {
+					/* ignore reads while there is a tag in place */
+					return;
+				}
+				
 				/* Update the read count */
 				read();
+				System.out.println("["+System.currentTimeMillis()+"]["+epc+"] READ["+readsInReadState+"]");
 				
 				/* check if threshold is met */
 				if(updateReadThreshold()) {
+					
+					long now = System.nanoTime();
+					if((now-tagInPlaceStartTs)<TimeUnit.MILLISECONDS.toNanos(LOW_LEVEL_WINDOW_MS)) {
+						System.out.println("["+System.currentTimeMillis()+"] Low level too small when switching to VALIDATION. Reset system");
+						reset();
+						return;
+					}
+					
 					/* enter validation phase */
 					System.out.println("["+System.currentTimeMillis()+"]["+epc+"] READ->VALIDATING");
 					setState(TagState.VALIDATING);
