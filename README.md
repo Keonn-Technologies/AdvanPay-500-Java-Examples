@@ -18,7 +18,7 @@ In linux is the default port is the created when no other usb device is connecte
 
 **x86 32/64 bits**
 ```PowerShell
-java -classpath bin;lib\slf4j-api-1.6.1.jar;lib\slf4j-simple-1.6.1.jar;lib\mercuryapi-1.35.1.58.jar;lib\JCLAP-1.1.jar com.keonn.adpy500.examples.ADPY500_Example1 -c eapi://COM10
+java -classpath bin;lib\slf4j-api-1.6.1.jar;lib\slf4j-simple-1.6.1.jar;lib\mercuryapi-1.35.1.58.jar;lib\JCLAP-1.1.jar com.keonn.adpy500.examples.ADPY500_Example1 -c eapi:///COM10
 ```
 
 #### Linux
