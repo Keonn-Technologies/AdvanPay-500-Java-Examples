@@ -41,7 +41,7 @@ import snaq.util.jclap.OptionException;
  */
 public class ADPY500_Example1 implements ReadExceptionListener{
 
-	private static final int DEF_READ_POWER 			= 1250;
+	private static final int DEF_READ_POWER 			= 1800;
 	private static final int DEF_READ_TIME_MS 			= 50;
 	private static final String DEF_DEVICE 				= "eapi:///dev/ttyUSB0";
 	private static final Gen2.Session DEF_SESSION 		= Gen2.Session.S0;
@@ -53,13 +53,13 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 	 * Reads and time threshold.
 	 * When the number of reads is reached in the defined period, the tag state goes from READ to VALIDATING
 	 */
-	private static int READ_THRESHOLD = 3;
+	private static int READ_THRESHOLD = 2;
 	private static int READ_WINDOW_MS = 2000;
 	
 	private static int RESET_WINDOW_MS = 1500;
 	
 	/* Defines the maximum time a validation can take, if it takes longer, the current deactivation operation is cancelled */
-	private static int VALIDATING_WINDOW_MS = 3000;
+	private static int VALIDATING_WINDOW_MS = 1000;
 	
 	/* Defines the maximum time a deactivation operation is available, if it takes longer, the current deactivation operation is cancelled */
 	private static int DEACTIVATING_WINDOW_MS = 2500;
@@ -68,7 +68,7 @@ public class ADPY500_Example1 implements ReadExceptionListener{
 	private static int DEACTIVATION_PERIOD_MS = 2500;
 	
 	/* Define a delay for the validation process of the epcs */
-	private static int VALIDATION_DELAY_MS = 200;
+	private static int VALIDATION_DELAY_MS = 300;
 	
 	/* Minimum time window  for the tag being undetected (sensor in low state) to allow a transition READ -> VALIDATING*/
 	private static int LOW_LEVEL_WINDOW_MS = 1000;
