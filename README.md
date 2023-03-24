@@ -4,7 +4,7 @@
 
 These examples use a combination of ThingMagic's Java SDK and propietary Keonn libraries to show how to implement some functionalities with AdvanReader-10 series devices.
 
-* **ADPY500_Example1:** Complete example on hoe to operate AdvanPay-500
+* **ADPY500_Example1:** Complete example on how to operate AdvanPay-500
 
 ## How to run the examples:
 
